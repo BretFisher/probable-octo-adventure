@@ -10,57 +10,92 @@ on:
     branches: ["main"]
 
 jobs:
-  build:
-    runs-on: ${{ matrix.os }}
+  # Approach 1: Cross-compile all 6 variants on a single Linux runner
+  # Pros: Fastest, cheapest (1 runner), all builds run sequentially in one job
+  # Cons: Cannot run tests (cross-compiled binaries won't execute)
+  build-single-runner:
+    name: Cross-Compile (Single Runner)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: "1.24"
+
+      - name: Build all variants
+        run: |
+          mkdir -p build
+          GOOS=linux   GOARCH=amd64 go build -v -o build/myapp-linux-amd64 .
+          GOOS=linux   GOARCH=arm64 go build -v -o build/myapp-linux-arm64 .
+          GOOS=darwin  GOARCH=amd64 go build -v -o build/myapp-darwin-amd64 .
+          GOOS=darwin  GOARCH=arm64 go build -v -o build/myapp-darwin-arm64 .
+          GOOS=windows GOARCH=amd64 go build -v -o build/myapp-windows-amd64.exe .
+          GOOS=windows GOARCH=arm64 go build -v -o build/myapp-windows-arm64.exe .
+
+      - name: Test (native only)
+        run: go test -v ./...
+
+  # Approach 2: Cross-compile using matrix on 6 ubuntu-latest runners
+  # Pros: Parallel builds, still uses Go cross-compilation
+  # Cons: Uses 6 runners, cannot run tests (cross-compiled binaries won't execute)
+  build-cross-compile-matrix:
+    name: Cross-Compile (${{ matrix.goos }}/${{ matrix.goarch }})
+    runs-on: ubuntu-latest
     permissions:
       contents: read
     strategy:
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
-        arch: [amd64, arm64]
+        goos: [linux, darwin, windows]
+        goarch: [amd64, arm64]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Set up Go
-        uses: actions/setup-go@v4
+        uses: actions/setup-go@v6
         with:
           go-version: "1.24"
 
       - name: Build
         env:
-          GOARCH: ${{ matrix.arch }}
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          mkdir -p build
+          EXT=""
+          if [ "$GOOS" = "windows" ]; then EXT=".exe"; fi
+          go build -v -o build/myapp-${{ matrix.goos }}-${{ matrix.goarch }}${EXT} .
+
+  # Approach 3: Native runners for each OS/arch combination
+  # Pros: Can run tests on native architecture, most realistic build environment
+  # Cons: Uses 6 different runners, may have longer queue times for some platforms
+  build-native:
+    name: Native Build (${{ matrix.runner }})
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+    strategy:
+      matrix:
+        runner:
+          - ubuntu-latest
+          - ubuntu-24.04-arm
+          - macos-15-intel
+          - macos-latest
+          - windows-latest
+          - windows-11-arm
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: "1.24"
+
+      - name: Build
         run: go build -v ./...
 
       - name: Test
-        if: matrix.arch == 'amd64' || (matrix.os == 'macos-latest' && matrix.arch == 'arm64')
         run: go test -v ./...
-
-  docker:
-    name: Docker Build
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
-    steps:
-      - name: Login to GHCR
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Login to Docker Hub
-        uses: docker/login-action@v3
-        with:
-          username: ${{ vars.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-      - name: Build and push
-        uses: docker/build-push-action@v6
-        with:
-          push: true
-          tags: |
-            ghcr.io/bretfisher/probable-octo-adventure:latest
-            bretfisher/probable-octo-adventure:latest
